@@ -50,6 +50,8 @@ func (sl *SkipList) Put(key, value string) {
 	sl.mutex.Lock()
 	defer sl.mutex.Unlock()
 
+	// fmt.Printf("Putting %s: %s\n", key, value)
+
 	update := make([]*SkipNode, sl.maxLevel+1)
 	current := sl.head
 
@@ -76,7 +78,7 @@ func (sl *SkipList) Put(key, value string) {
 	}
 
 	newNode := NewSkipNode(key, value, level)
-	for i := 0; i < level; i++ {
+	for i := 0; i <= level; i++ {
 		newNode.forward[i] = update[i].forward[i]
 		update[i].forward[i] = newNode
 	}
@@ -88,10 +90,18 @@ func (sl *SkipList) Get(key string) (string, bool) {
 	defer sl.mutex.RUnlock()
 
 	current := sl.head
+	for i := sl.level; i >= 0; i-- {
+		for current.forward[i] != nil && current.forward[i].key < key {
+			current = current.forward[i]
+		}
+	}
+	current = current.forward[0]
 
 	if current != nil && current.key == key {
+		// fmt.Printf("Found %s: %s\n", key, current.value)
 		return current.value, true
 	}
+	// fmt.Printf("Not found %s\n", key)
 	return "", false
 }
 
