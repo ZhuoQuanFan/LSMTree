@@ -13,6 +13,12 @@ type SSTable struct {
 	mutex    sync.RWMutex
 }
 
+//easyjson:json
+type Entry struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 func NewSSTable(filepath string) *SSTable {
 	return &SSTable{
 		filepath: filepath,
@@ -42,12 +48,10 @@ func (s *SSTable) Write(data map[string]string) error {
 
 	offset := int64(0)
 	for _, key := range keys {
-		entry := struct {
-			Key   string `json:"key"`
-			Value string `json:"value"`
-		}{Key: key, Value: data[key]}
+		//easyjson:json
+		entry := Entry{Key: key, Value: data[key]}
 
-		data, err := json.Marshal(entry)
+		data, err := entry.MarshalJSON()
 
 		if err != nil {
 			return err

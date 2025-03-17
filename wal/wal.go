@@ -1,11 +1,11 @@
 package wal
 
 import (
-	"encoding/json"
 	"os"
 	"sync"
 )
 
+//easyjson:json
 type Entry struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
@@ -24,7 +24,6 @@ func NewWAL(filename string) (*WAL, error) {
 	}
 }
 
-// TODO：用easyjson代替json
 func (w *WAL) Write(key, value string) error {
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
@@ -34,7 +33,7 @@ func (w *WAL) Write(key, value string) error {
 		Value: value,
 	}
 
-	data, err := json.Marshal(entry)
+	data, err := entry.MarshalJSON()
 	if err != nil {
 		return err
 	}
@@ -62,15 +61,16 @@ func RecoverWAL(filename string) (map[string]string, error) {
 	defer file.Close()
 
 	result := make(map[string]string)
-	decoder := json.NewDecoder(file)
+
 	for {
 		var entry Entry
-		if err := decoder.Decode(&entry); err != nil {
-			if err := decoder.Decode(&entry); err != nil {
-				break
-			}
+		data := []byte{}
+		if err := entry.UnmarshalJSON(data); err != nil {
+			break
+		} else {
 			result[entry.Key] = entry.Value
 		}
+
 	}
 	return result, nil
 }

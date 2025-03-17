@@ -35,7 +35,7 @@ func main() {
 	}
 	wg.Wait()
 	fmt.Println("Successfully inserted keys")
-	fmt.Println(lsmTree)
+	// fmt.Println(lsmTree)
 
 	for i := 0; i < 15; i++ {
 		key := fmt.Sprintf("key%d", i)
