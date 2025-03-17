@@ -3,21 +3,27 @@ package lsm
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"src/lsm-tree/skiplist"
 	"src/lsm-tree/sstable"
 	"src/lsm-tree/wal"
 	"sync"
+	"time"
 )
 
 type LSMTree struct {
-	memTable   *skiplist.SkipList
-	wal        *wal.WAL
-	sstables   []*sstable.SSTable
-	maxSize    int
-	baseDir    string
-	mutex      sync.Mutex
-	sstableSeq int
+	memTable    *skiplist.SkipList
+	wal         *wal.WAL
+	sstables    []*sstable.SSTable
+	maxSize     int
+	baseDir     string
+	mutex       sync.Mutex
+	sstableSeq  int
+	flushChan   chan struct{}
+	compactChan chan struct{}
+	wg          sync.WaitGroup
+	closed      bool
 }
 
 func NewLSMTree(baseDir string, maxSize int) (*LSMTree, error) {
@@ -40,14 +46,21 @@ func NewLSMTree(baseDir string, maxSize int) (*LSMTree, error) {
 		memTable.Put(k, v)
 	}
 
-	return &LSMTree{
-		memTable:   memTable,
-		wal:        walInstance,
-		sstables:   make([]*sstable.SSTable, 0),
-		maxSize:    maxSize,
-		baseDir:    baseDir,
-		sstableSeq: 0,
-	}, nil
+	lsm := &LSMTree{
+		memTable:    memTable,
+		wal:         walInstance,
+		sstables:    make([]*sstable.SSTable, 0),
+		maxSize:     maxSize,
+		baseDir:     baseDir,
+		sstableSeq:  0,
+		flushChan:   make(chan struct{}, 1),
+		compactChan: make(chan struct{}, 1),
+	}
+
+	lsm.wg.Add(1)
+	go lsm.backgroundWorker()
+
+	return lsm, nil
 }
 func (lsm *LSMTree) flush() error {
 	sstableFile := fmt.Sprintf("%s/sstable-%d", lsm.baseDir, lsm.sstableSeq)
@@ -76,6 +89,14 @@ func (lsm *LSMTree) flush() error {
 	}
 
 	lsm.wal = walInstance
+
+	//判断是否需要合并SSTable文件
+	if len(lsm.sstables) >= 3 {
+		select {
+		case lsm.compactChan <- struct{}{}:
+		default:
+		}
+	}
 	return nil
 
 }
@@ -83,6 +104,9 @@ func (lsm *LSMTree) Put(key, value string) error {
 	lsm.mutex.Lock()
 	defer lsm.mutex.Unlock()
 
+	if lsm.closed {
+		return fmt.Errorf("lsm tree is closed")
+	}
 	//写入WAL
 	if err := lsm.wal.Write(key, value); err != nil {
 		return err
@@ -92,9 +116,11 @@ func (lsm *LSMTree) Put(key, value string) error {
 	lsm.memTable.Put(key, value)
 
 	if lsm.memTable.Size() >= lsm.maxSize {
-		if err := lsm.flush(); err != nil {
-			return err
+		select {
+		case lsm.flushChan <- struct{}{}:
+		default:
 		}
+
 	}
 	return nil
 
@@ -169,4 +195,55 @@ func (lsm *LSMTree) Close() error {
 		return err
 	}
 	return lsm.wal.Close()
+}
+
+func (lsm *LSMTree) backgroundWorker() {
+	defer lsm.wg.Done()
+
+	for {
+		select {
+		case <-lsm.flushChan:
+			// 加锁
+			lsm.mutex.Lock()
+			if !lsm.closed && lsm.memTable.Size() > 0 {
+				// 尝试刷新内存表
+				if err := lsm.flush(); err != nil {
+					log.Printf("Flush error: %v", err)
+				}
+			}
+			// 解锁
+			lsm.mutex.Unlock()
+		case <-lsm.compactChan:
+			// 加锁
+			lsm.mutex.Lock()
+			if !lsm.closed && len(lsm.sstables) > 1 {
+				// 尝试合并SSTables
+				if err := lsm.Compact(); err != nil {
+					log.Printf("Compaction error: %v", err)
+				}
+			}
+		case <-time.After(time.Second * 10):
+			// 加锁
+			lsm.mutex.Lock()
+			if !lsm.closed && len(lsm.sstables) >= 3 {
+				// 尝试合并SSTables
+				if err := lsm.Compact(); err != nil {
+					log.Printf("Compaction error: %v", err)
+				}
+			}
+			// 解锁
+			lsm.mutex.Unlock()
+		}
+
+		// 加锁
+		lsm.mutex.Lock()
+
+		if lsm.closed {
+			// 解锁
+			lsm.mutex.Unlock()
+			return
+		}
+		// 解锁
+		lsm.mutex.Unlock()
+	}
 }

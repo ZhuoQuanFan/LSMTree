@@ -21,6 +21,7 @@ func main() {
 	defer lsmTree.Close()
 
 	var wg sync.WaitGroup
+
 	for i := 0; i < 15; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -28,7 +29,7 @@ func main() {
 			key := fmt.Sprintf("key%d", i)
 			value := fmt.Sprintf("value%d", i)
 			if err := lsmTree.Put(key, value); err != nil {
-				panic(err)
+				fmt.Printf("Put error for %s: %v\n", key, err)
 			}
 		}(i)
 
