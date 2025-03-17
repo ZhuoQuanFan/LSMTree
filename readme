@@ -1,0 +1,19 @@
+lsm-tree/
+├── main.go           # 主程序入口
+├── skiplist/         # 跳表实现
+│   └── skiplist.go
+├── wal/             # Write-Ahead Logging实现
+│   └── wal.go
+├── sstable/         # SSTable实现
+│   └── sstable.go
+└── lsm/             # LSM-Tree主逻辑  
+│   └── lsm.go
+├── readme           #说明
+
+
+
+MemTable: 使用跳表实现，支持高效的插入和查询。
+WAL: 实现Write-Ahead Logging，支持崩溃恢复，每次Put操作先写入WAL。
+SSTable: 实现磁盘上的有序键值存储，支持索引和查询。
+Flush: 当MemTable达到阈值时，将数据刷到SSTable，并清空WAL和MemTable。
+Compaction: 实现简单的SSTable合并，合并所有SSTable为一个新的SSTable。
