@@ -2,7 +2,6 @@ package sstable
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +11,12 @@ import (
 	"github.com/bits-and-blooms/bloom/v3"
 )
 
+//easyjson:json
+type Entry struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
 type SSTable struct {
 	filepath string
 	index    map[string]int64
@@ -19,17 +24,12 @@ type SSTable struct {
 	bloom    *bloom.BloomFilter
 }
 
-//easyjson:json
-type Entry struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-}
-
 func NewSSTable(filepath string) *SSTable {
 	sst := &SSTable{
 		filepath: filepath,
 		index:    make(map[string]int64),
 	}
+
 	// 检查是否存在布隆过滤器文件
 	bloomFile := filepath + ".bloom"
 	if _, err := os.Stat(bloomFile); err == nil {
@@ -48,42 +48,35 @@ func NewSSTable(filepath string) *SSTable {
 				return &SSTable{filepath: filepath, index: make(map[string]int64), bloom: bloom.NewWithEstimates(10000, 0.01)}
 			}
 
-			// 读取位数组数据
-			data := make([]byte, m/8) // 转换为字节数
-			if _, err := io.ReadFull(file, data); err != nil {
+			// 读取整个文件剩余内容
+			data, err := io.ReadAll(file)
+			if err != nil {
 				fmt.Printf("Failed to read bloom data from %s: %v\n", bloomFile, err)
 				return &SSTable{filepath: filepath, index: make(map[string]int64), bloom: bloom.NewWithEstimates(10000, 0.01)}
 			}
+			fmt.Printf("Read data length: %d, expected m/8: %d\n", len(data), m/8)
 
-			// 转换为 uint64 切片
-			uint64Data := make([]uint64, (len(data)+7)/8) // 确保足够空间
-			for i := 0; i < len(data); i += 8 {
-				end := i + 8
-				if end > len(data) {
-					end = len(data)
-				}
-				padding := make([]byte, 8-len(data[i:end])) // 修正：移除多余的 ...
-				val := binary.LittleEndian.Uint64(append(data[i:end], padding...))
-				uint64Data[i/8] = val
+			// 创建一个新的布隆过滤器并加载数据
+			bf := bloom.NewWithEstimates(uint(m), 0.01)
+			if err := bf.UnmarshalBinary(data); err != nil {
+				fmt.Printf("Failed to unmarshal bloom filter from %s: %v\n", bloomFile, err)
+				return &SSTable{filepath: filepath, index: make(map[string]int64), bloom: bloom.NewWithEstimates(10000, 0.01)}
 			}
-
-			// 创建布隆过滤器
-			sst.bloom = bloom.FromWithM(uint64Data, uint(m), uint(k))
+			sst.bloom = bf
 			return sst
 		}
 	}
-	sst.bloom = bloom.NewWithEstimates(10000, 0.01) // 10000 元素，1% 误判率
+
+	// 如果文件不存在或加载失败，创建新的布隆过滤器
+	sst.bloom = bloom.NewWithEstimates(10000, 0.01)
 	return sst
-
 }
 
-func (sst *SSTable) GetFilePath() string {
-	return sst.filepath
-}
 func (s *SSTable) Write(data map[string]string) error {
 	s.mutex.Lock()
 	defer s.mutex.Unlock()
 
+	// 写入 SSTable 文件
 	file, err := os.Create(s.filepath)
 	if err != nil {
 		return err
@@ -94,36 +87,65 @@ func (s *SSTable) Write(data map[string]string) error {
 	for k := range data {
 		keys = append(keys, k)
 	}
-
 	sort.Strings(keys)
 
 	offset := int64(0)
 	for _, key := range keys {
-		//easyjson:json
 		entry := Entry{Key: key, Value: data[key]}
-
-		data, err := entry.MarshalJSON()
-
+		jsonData, err := entry.MarshalJSON()
 		if err != nil {
 			return err
 		}
-		if _, err := file.Write(append(data, '\n')); err != nil {
+		if _, err := file.Write(append(jsonData, '\n')); err != nil {
 			return err
 		}
 		s.index[key] = offset
 		s.bloom.AddString(key)
-		offset += int64(len(data) + 1)
+		offset += int64(len(jsonData) + 1)
 	}
-	return file.Sync()
+	if err := file.Sync(); err != nil {
+		return err
+	}
+
+	// 保存布隆过滤器到磁盘
+	bloomFile := s.filepath + ".bloom"
+	bloomOut, err := os.Create(bloomFile)
+	if err != nil {
+		return err
+	}
+	defer bloomOut.Close()
+
+	// 保存元数据 (m, k)
+	m := s.bloom.Cap()
+	k := s.bloom.K()
+	if err := binary.Write(bloomOut, binary.LittleEndian, uint32(m)); err != nil {
+		return err
+	}
+	if err := binary.Write(bloomOut, binary.LittleEndian, uint32(k)); err != nil {
+		return err
+	}
+
+	// 获取位数组并保存
+	dataBytes, err := s.bloom.MarshalBinary()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Marshaled data length: %d, m/8: %d\n", len(dataBytes), m/8)
+	if n, err := bloomOut.Write(dataBytes); err != nil || n != len(dataBytes) {
+		return fmt.Errorf("failed to write bloom data: %v, wrote %d bytes, expected %d", err, n, len(dataBytes))
+	}
+	return bloomOut.Sync()
 }
 
 func (s *SSTable) Get(key string) (string, bool) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
 
+	// 先检查布隆过滤器
 	if !s.bloom.TestString(key) {
 		return "", false
 	}
+
 	offset, exists := s.index[key]
 	if !exists {
 		return "", false
@@ -139,15 +161,23 @@ func (s *SSTable) Get(key string) (string, bool) {
 		return "", false
 	}
 
-	var entry struct {
-		Key   string `json:"key"`
-		Value string `json:"value"`
+	buffer := make([]byte, 1024)
+	n, err := file.Read(buffer)
+	if err != nil {
+		return "", false
 	}
 
-	decoder := json.NewDecoder(file)
-	if err := decoder.Decode(&entry); err != nil {
+	end := 0
+	for i := 0; i < n; i++ {
+		if buffer[i] == '\n' {
+			end = i
+			break
+		}
+	}
+
+	var entry Entry
+	if err := entry.UnmarshalJSON(buffer[:end]); err != nil {
 		return "", false
 	}
 	return entry.Value, true
-
 }
