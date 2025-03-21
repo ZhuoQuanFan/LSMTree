@@ -181,3 +181,7 @@ func (s *SSTable) Get(key string) (string, bool) {
 	}
 	return entry.Value, true
 }
+
+func (lsm *SSTable) GetFilePath() string {
+	return lsm.filepath
+}

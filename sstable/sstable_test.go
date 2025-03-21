@@ -1,6 +1,8 @@
 package sstable
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"testing"
 )
@@ -105,6 +107,79 @@ func TestBloomFilterPersistence(t *testing.T) {
 			t.Error("Empty bloom filter incorrectly detected non-existent key 'key1'")
 		}
 	})
+}
+
+func TestBloomFilterFalsePositiveRate(t *testing.T) {
+	// 测试参数
+	const (
+		n       = 10000   // 插入元素数量
+		fpRate  = 0.01    // 目标误判率
+		testNum = 1000000 // 测试查询次数
+	)
+
+	// 使用临时目录
+	tempDir := t.TempDir()
+	filepath := tempDir + "/test_sstable.sst"
+
+	// 创建布隆过滤器并插入数据
+	sst := NewSSTable(filepath)
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("key%d", i)
+		sst.bloom.AddString(key)
+	}
+
+	// 保存到磁盘
+	data := make(map[string]string)
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("key%d", i)
+		data[key] = fmt.Sprintf("value%d", i)
+	}
+	if err := sst.Write(data); err != nil {
+		t.Fatalf("Failed to write SSTable: %v", err)
+	}
+
+	// 重新加载布隆过滤器
+	sst2 := NewSSTable(filepath)
+	if sst2.bloom == nil {
+		t.Fatal("Bloom filter not initialized after load")
+	}
+
+	// 验证已插入的键都能检测到
+	for i := 0; i < n; i++ {
+		key := fmt.Sprintf("key%d", i)
+		if !sst2.bloom.TestString(key) {
+			t.Errorf("Failed to detect existing key '%s'", key)
+		}
+	}
+
+	// 测试误判率：查询不在集合中的键
+	falsePositives := 0
+	for i := 0; i < testNum; i++ {
+		key := fmt.Sprintf("test%d", i) // 确保这些键不在集合中
+		if sst2.bloom.TestString(key) {
+			falsePositives++
+		}
+	}
+
+	// 计算实际误判率
+	measuredFpRate := float64(falsePositives) / float64(testNum)
+	t.Logf("Measured false positive rate: %.4f", measuredFpRate)
+
+	// 计算理论误判率
+	m := float64(sst2.bloom.Cap())
+	k := float64(sst2.bloom.K())
+	theoreticalFpRate := math.Pow(1-math.Exp(-k*float64(n)/m), k)
+	t.Logf("Theoretical false positive rate: %.4f", theoreticalFpRate)
+
+	// 验证实际误判率是否接近理论值（允许一定偏差，例如 20%）
+	if math.Abs(measuredFpRate-theoreticalFpRate)/theoreticalFpRate > 0.2 {
+		t.Errorf("Measured false positive rate %.4f deviates too much from theoretical %.4f", measuredFpRate, theoreticalFpRate)
+	}
+
+	// 验证实际误判率是否接近目标误判率
+	if math.Abs(measuredFpRate-fpRate)/fpRate > 0.2 {
+		t.Errorf("Measured false positive rate %.4f deviates too much from target %.4f", measuredFpRate, fpRate)
+	}
 }
 
 func TestMain(m *testing.M) {
