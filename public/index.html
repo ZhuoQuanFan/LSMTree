@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LSM-Tree Key-Value Store</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="container">
+    <h1>LSM-Tree Key-Value Store</h1>
+
+    <div class="section">
+        <h2>Put Key-Value</h2>
+        <input type="text" id="putKey" placeholder="Key">
+        <input type="text" id="putValue" placeholder="Value">
+        <button onclick="putData()">Put</button>
+        <p id="putStatus"></p>
+    </div>
+
+    <div class="section">
+        <h2>Get Key</h2>
+        <input type="text" id="getKey" placeholder="Key">
+        <button onclick="getData()">Get</button>
+        <p id="getStatus"></p>
+    </div>
+
+    <div class="section">
+        <h2>Compaction</h2>
+        <button onclick="compactData()">Trigger Compaction</button>
+        <p id="compactStatus"></p>
+    </div>
+</div>
+
+<script src="/script.js"></script>
+</body>
+</html>
